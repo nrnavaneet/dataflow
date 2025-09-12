@@ -1,6 +1,6 @@
 from confluent_kafka.admin import AdminClient, NewTopic
 
-def create_topic(topic_name, num_partitions=1, replication_factor=1):
+def create_topic(topic_name, num_partitions, replication_factor):
     """
     Create a Kafka topic with the specified name, number of partitions, and replication factor.
     """
