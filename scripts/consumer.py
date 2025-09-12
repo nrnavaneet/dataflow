@@ -1,48 +1,75 @@
 from confluent_kafka import Consumer
-import json,time
+import orjson, time, os, multiprocessing as mp
 
-BROKERS='localhost:8097,localhost:8098,localhost:8099'
+BROKERS = 'localhost:8097,localhost:8098,localhost:8099'
 
-c = Consumer({
-    'bootstrap.servers': BROKERS,
-    'group.id': 'stock-price-consumers',
-    'auto.offset.reset': 'earliest',
-    'enable.auto.commit': False,
-    'fetch.min.bytes': 1024*1024,
-    'fetch.wait.max.ms': 100,
-    'max.partition.fetch.bytes': 5*1024*1024,
-    'max.poll.records': 2000,           # default 500, increase if your app can handle
-    'queued.max.messages.kbytes': 102400, # 100 MB internal queue
-    'queued.min.messages': 10000,         # ensure deep queue
-    'session.timeout.ms': 45000,          # allow longer heartbeats
-    'heartbeat.interval.ms': 15000,
-})
+# Shared dict for reporting counts across workers
+def run_consumer(worker_id, counter_dict):
+    c = Consumer({
+        'bootstrap.servers': BROKERS,
+        'group.id': 'stock-price-consumers',
+        'auto.offset.reset': 'earliest',
+        'enable.auto.commit': False,
+        'fetch.min.bytes': 5 * 1024 * 1024,
+        'fetch.wait.max.ms': 200,
+        'max.partition.fetch.bytes': 50 * 1024 * 1024,
+    })
 
-c.subscribe(['stock-prices'])
+    c.subscribe(['stock-prices'])
 
-print("Consuming messages from 'stock-prices' topic...")
+    count = 0
+    start_time = time.time()
 
-count=0
-start_time=time.time()
+    print(f"Worker {worker_id} started...")
 
-try:
+    try:
+        while True:
+            msgs = c.consume(num_messages=2000, timeout=1.0)
+            for msg in msgs:
+                if msg.error():
+                    continue
+                try:
+                    orjson.loads(msg.value())
+                    count += 1
+                except Exception:
+                    pass
+
+            elapsed_time = time.time() - start_time
+            if elapsed_time >= 1:
+                rate = count / elapsed_time
+                counter_dict[worker_id] = rate
+                #print(f"Worker {worker_id} → {rate:.2f} msgs/sec")
+                count = 0
+                start_time = time.time()
+
+            c.commit(asynchronous=True)
+    except KeyboardInterrupt:
+        print(f"Stopping Worker {worker_id}...")
+    finally:
+        c.close()
+
+
+def aggregator(counter_dict, num_workers):
     while True:
-        msgs = c.consume(num_messages=500, timeout=1.0)
-        for msg in msgs:
-            if msg.error():
-                print(f"Consumer error: {msg.error()}")
-                continue
-            data = json.loads(msg.value().decode('utf-8'))
-            count+=1
-        
-        elapsed_time=time.time()-start_time
-        if elapsed_time >=1:
-            mps = count / elapsed_time
-            print(f"Consumed {count} messages. Throughput: {mps:.2f} msgs/sec")
-            count=0
-            start_time=time.time()
+        time.sleep(1)
+        total = sum(counter_dict.values())
+        if total > 0:
+            print(f"TOTAL → {total:.2f} msgs/sec consumed...")
 
-except KeyboardInterrupt:
-    pass
-finally:
-    c.close()
+
+if __name__ == "__main__":
+    num_workers = 3
+    with mp.Manager() as manager:
+        counter_dict = manager.dict()
+
+        processes = []
+        for wid in range(num_workers):
+            p = mp.Process(target=run_consumer, args=(wid, counter_dict))
+            p.start()
+            processes.append(p)
+
+        agg = mp.Process(target=aggregator, args=(counter_dict, num_workers))
+        agg.start()
+
+        for p in processes:
+            p.join()
