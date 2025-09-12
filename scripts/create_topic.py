@@ -4,7 +4,9 @@ def create_topic(topic_name, num_partitions, replication_factor):
     """
     Create a Kafka topic with the specified name, number of partitions, and replication factor.
     """
-    admin_client = AdminClient({'bootstrap.servers':'localhost:9092'})
+    BROKERS='localhost:8097,localhost:8098,localhost:8099'
+
+    admin_client = AdminClient({'bootstrap.servers': BROKERS})
 
     existing_topics = admin_client.list_topics().topics
     if topic_name in existing_topics:

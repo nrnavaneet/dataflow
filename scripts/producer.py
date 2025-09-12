@@ -3,7 +3,7 @@ from create_topic import create_topic
 import json,random,time
 
 
-BROKERS='localhost:9092,localhost:9093,localhost:9094'
+BROKERS='localhost:8097,localhost:8098,localhost:8099'
 BATCH_SIZE=1000
 sent_messages=0
 start_time=time.time()
