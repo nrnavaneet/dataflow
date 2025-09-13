@@ -33,7 +33,8 @@ def produce_messages(proc_id):
             "order_type": random.choice(["BUY", "SELL", "SHORT", "COVER"]),
             "trade_id": str(uuid.uuid4()),
             "trader": random.choice(["fund_A", "fund_B", "fund_C", "hedge_X", "retail", "HNI"]),
-            "sector": random.choice(["Tech", "Finance", "Energy", "Healthcare", "Automobile", "Retail", "Telecom"]),
+            "sector": random.choice(["Tech", "Finance", "Energy", "Healthcare", "Automobile", "Retail", "Telecom"
+            ]),
             "currency": random.choice(["USD", "INR", "EUR", "GBP", "JPY", "AED"]),
             "order_source": random.choice(["MobileApp", "Web", "API", "BrokerDesk"]),
             "settlement_type": random.choice(["T+1", "T+2", "Instant"]),
@@ -55,7 +56,7 @@ def produce_messages(proc_id):
 if __name__ == "__main__":
     create_topic("stock-prices", num_partitions=12, replication_factor=3)
 
-    num_procs = multiprocessing.cpu_count() // 2  # tune this
+    num_procs = 5
     processes = []
     for i in range(num_procs):
         p = multiprocessing.Process(target=produce_messages, args=(i,))

@@ -1,1 +1,7 @@
 confluent-kafka
+boto3
+pyarrow
+pandas
+s3fs
+orjson
+dotenv
