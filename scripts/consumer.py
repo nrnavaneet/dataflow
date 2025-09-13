@@ -8,14 +8,12 @@ from dotenv import load_dotenv
 from datetime import datetime
 import threading
 
-# Load AWS & bucket info from .env
 load_dotenv()
 BROKERS = 'localhost:8097,localhost:8098,localhost:8099'
 BUCKET_NAME = os.getenv("BUCKET_NAME")
 REGION = os.getenv("AWS_DEFAULT_REGION")
-BATCH_SIZE = 50000  # Adjust as needed
+BATCH_SIZE = 50000  
 
-# Initialize S3 filesystem
 fs = s3fs.S3FileSystem(
     key=os.getenv("AWS_ACCESS_KEY_ID"),
     secret=os.getenv("AWS_SECRET_ACCESS_KEY"),
@@ -39,7 +37,6 @@ def flush_to_s3(records):
     s3_file_key = f"stock-prices/{month_name}/{day_name}-{day_num}/{hour_path}/stock-prices_{timestamp}.parquet"
     s3_path = f"s3://{BUCKET_NAME}/{s3_file_key}"
 
-    # Write directly to S3
     pq.write_table(table, s3_path, filesystem=fs)
     print(f"Flushed {len(records)} records to {s3_file_key}")
 
