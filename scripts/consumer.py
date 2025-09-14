@@ -7,42 +7,65 @@ import s3fs
 from dotenv import load_dotenv
 from datetime import datetime
 import threading
+import random
 
 load_dotenv()
+
 BROKERS = 'localhost:8097,localhost:8098,localhost:8099'
+TOPIC = 'stock-prices'
 BUCKET_NAME = os.getenv("BUCKET_NAME")
 REGION = os.getenv("AWS_DEFAULT_REGION")
-BATCH_SIZE = 50000  
 
+# batching thresholds
+BATCH_SIZE = 200_000
+FLUSH_INTERVAL = 10   # seconds
+
+# s3 client
 fs = s3fs.S3FileSystem(
     key=os.getenv("AWS_ACCESS_KEY_ID"),
     secret=os.getenv("AWS_SECRET_ACCESS_KEY"),
     client_kwargs={"region_name": REGION}
 )
 
-def flush_to_s3(records):
+def flush_to_s3(records, worker_id, attempt=1, max_attempts=3):
+    """Flush batch to S3 with retries"""
     if not records:
-        return
+        return False
 
-    df = pd.DataFrame(records)
-    table = pa.Table.from_pandas(df)
+    try:
+        df = pd.DataFrame(records)
+        table = pa.Table.from_pandas(df)
 
-    now = datetime.now()
-    month_name = now.strftime("%b")        # e.g., Sep
-    day_name = now.strftime("%a")          # e.g., Mon
-    day_num = now.strftime("%d")           # e.g., 14
-    hour_path = now.strftime("%H")         # e.g., 15
-    timestamp = int(time.time() * 1000)    # unique file suffix
+        now = datetime.now()
+        year = now.strftime("%Y")
+        month = now.strftime("%m")
+        day = now.strftime("%d")
+        hour = now.strftime("%H")
+        timestamp = int(time.time() * 1000)
 
-    s3_file_key = f"stock-prices/{month_name}/{day_name}-{day_num}/{hour_path}/stock-prices_{timestamp}.parquet"
-    s3_path = f"s3://{BUCKET_NAME}/{s3_file_key}"
+        s3_file_key = (
+            f"stock-prices/year={year}/month={month}/day={day}/hour={hour}/"
+            f"worker{worker_id}-part-{timestamp}.parquet"
+        )
+        s3_path = f"s3://{BUCKET_NAME}/{s3_file_key}"
 
-    pq.write_table(table, s3_path, filesystem=fs)
-    print(f"Flushed {len(records)} records to {s3_file_key}")
+        pq.write_table(table, s3_path, filesystem=fs)
+        print(f"[Worker {worker_id}] Flushed {len(records)} → {s3_file_key}")
+        return True
+
+    except Exception as e:
+        if attempt < max_attempts:
+            sleep_time = 2 ** attempt + random.random()
+            print(f"[Worker {worker_id}] Flush failed (attempt {attempt}), retrying in {sleep_time:.1f}s… {e}")
+            time.sleep(sleep_time)
+            return flush_to_s3(records, worker_id, attempt + 1, max_attempts)
+        else:
+            print(f"[Worker {worker_id}] Flush failed permanently after {max_attempts} attempts: {e}")
+            return False
 
 
-# Shared dict for reporting counts across workers
-def run_consumer(worker_id, counter_dict):
+def run_consumer(worker_id):
+    """Each worker consumes from Kafka and flushes to S3"""
     c = Consumer({
         'bootstrap.servers': BROKERS,
         'group.id': 'stock-price-consumers',
@@ -53,75 +76,53 @@ def run_consumer(worker_id, counter_dict):
         'max.partition.fetch.bytes': 50 * 1024 * 1024,
     })
 
-    c.subscribe(['stock-prices'])
+    c.subscribe([TOPIC])
 
-    count = 0
     batch = []
-    start_time = time.time()
     last_flush_time = time.time()
-    FLUSH_INTERVAL = 5  # seconds
 
-    print(f"Worker {worker_id} started...")
-
+    print(f"Worker {worker_id} started…")
     try:
         while True:
             msgs = c.consume(num_messages=5000, timeout=1.0)
+
             for msg in msgs:
                 if msg.error():
                     continue
                 try:
                     record = orjson.loads(msg.value())
                     batch.append(record)
-                    count += 1
                 except Exception:
                     pass
 
-            # Flush if batch is big or time interval passed
             if len(batch) >= BATCH_SIZE or (time.time() - last_flush_time) >= FLUSH_INTERVAL:
                 flush_batch = batch.copy()
-                threading.Thread(target=flush_to_s3, args=(flush_batch,), daemon=True).start()
+                success = flush_to_s3(flush_batch, worker_id)
+                if success:
+                    c.commit(asynchronous=True) 
                 batch.clear()
                 last_flush_time = time.time()
 
-            elapsed_time = time.time() - start_time
-            if elapsed_time >= 1:
-                counter_dict[worker_id] = count / elapsed_time
-                count = 0
-                start_time = time.time()
-
-            c.commit(asynchronous=True)
-
     except KeyboardInterrupt:
+        print(f"Stopping Worker {worker_id}…")
         if batch:
-            flush_to_s3(batch)
-        print(f"Stopping Worker {worker_id}...")
+            success = flush_to_s3(batch, worker_id)
+            if success:
+                c.commit(asynchronous=True)
     finally:
         c.close()
 
 
-def aggregator(counter_dict, num_workers):
-    while True:
-        time.sleep(1)
-        total = sum(counter_dict.values())
-        if total > 0:
-            #print(f"TOTAL → {total:.2f} msgs/sec consumed...")
-            continue
-
-
 if __name__ == "__main__":
-    mp.set_start_method("spawn") 
+    mp.set_start_method("spawn")
     num_workers = 3
-    with mp.Manager() as manager:
-        counter_dict = manager.dict()
 
-        processes = []
-        for wid in range(num_workers):
-            p = mp.Process(target=run_consumer, args=(wid, counter_dict))
-            p.start()
-            processes.append(p)
+    processes = []
+    print(f"Flushing to {BUCKET_NAME} once batch={BATCH_SIZE} or {FLUSH_INTERVAL}s interval.")
+    for wid in range(num_workers):
+        p = mp.Process(target=run_consumer, args=(wid,))
+        p.start()
+        processes.append(p)
 
-        agg = mp.Process(target=aggregator, args=(counter_dict, num_workers))
-        agg.start()
-
-        for p in processes:
-            p.join()
+    for p in processes:
+        p.join()

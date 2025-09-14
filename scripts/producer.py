@@ -56,7 +56,7 @@ def produce_messages(proc_id):
 if __name__ == "__main__":
     create_topic("stock-prices", num_partitions=12, replication_factor=3)
 
-    num_procs = 5
+    num_procs = 3
     processes = []
     for i in range(num_procs):
         p = multiprocessing.Process(target=produce_messages, args=(i,))
