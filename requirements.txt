@@ -5,3 +5,6 @@ pandas
 s3fs
 orjson
 dotenv
+black
+flake8
+pre-commit
